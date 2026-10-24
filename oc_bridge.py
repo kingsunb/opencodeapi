@@ -776,9 +776,9 @@ def chat_roundtrip(model, prompt, system, probe=False, account=None):
 
 
 def probe_one(a, model):
-    """单账号体检：结论 + 上游详情落台账，健康自动入池(解冻)。"""
+    """单账号体检：与 NovaVeil probeChannel 同问 "ping"；回答落台账供页面展示。"""
     t0 = time.time()
-    status, _msg, _usage, detail = chat_roundtrip(model, "hi", None,
+    status, text, _usage, detail = chat_roundtrip(model, "ping", None,
                                                   probe=True, account=a)
     ms = int((time.time() - t0) * 1000)
     if status == 200:
@@ -789,12 +789,13 @@ def probe_one(a, model):
         outcome = "rejected"
     else:
         outcome = "failed"
+    answer = (text or "")[:200]
     a.probe = {"outcome": outcome, "status": status, "ms": ms,
                "detail": (detail or "")[:200], "at": time.time(),
-               "model": model}
+               "model": model, "answer": answer}
     save_accounts()
     return {"name": a.name, "outcome": outcome, "status": status,
-            "ms": ms, "detail": (detail or "")[:200]}
+            "ms": ms, "detail": (detail or "")[:200], "answer": answer}
 
 
 def batch_probe(names, model, concurrency):
@@ -1114,7 +1115,9 @@ function render(s){
    else st=badge("可用","b-ok");
    const p=a.probe||{};
    let pv=p.at?badge((PROBE[p.outcome]||[p.outcome,"b-mut"])[0],(PROBE[p.outcome]||["","b-mut"])[1]):'<span class="mut">未体检</span>';
-   if(p.at)pv+=` <span class="mut">HTTP ${esc(p.status||"")} ${p.ms||0}ms ${esc((p.detail||"").slice(0,60))}<br>${ts(p.at)} · ${esc(p.model||"")}</span>`;
+   if(p.at)pv+=` <span class="mut">HTTP ${esc(p.status||"")} ${p.ms||0}ms<br>${ts(p.at)} · ${esc(p.model||"")}</span>`;
+   if(p.at&&p.answer)pv+=`<br><span>答: ${esc(p.answer).slice(0,80)}</span>`;
+   else if(p.at&&p.detail)pv+=` <span class="mut">${esc((p.detail||"").slice(0,60))}</span>`;
    const src=a.source==="config"?'<span class="mut">配置</span>':'<span class="mut">手动</span>';
    const ops=[
     `<button onclick="probeOne('${esc(a.name)}')">体检</button>`,
@@ -1132,7 +1135,7 @@ function render(s){
 async function probeOne(name){
  toast(name+" 体检中…");
  try{const r=await api(`/api/accounts/${name}/probe`,{model:$("#probeModel").value.trim()||undefined});
-  toast(`${name}：${r.outcome} HTTP ${r.status} ${r.ms}ms ${r.detail||""}`)}catch(e){toast(name+" 体检请求失败")}
+  toast(`${name}：${r.outcome} HTTP ${r.status} ${r.ms}ms${r.answer?` 答: ${r.answer}`:" "+(r.detail||"")}`)}catch(e){toast(name+" 体检请求失败")}
  refresh();
 }
 async function probeAll(){
