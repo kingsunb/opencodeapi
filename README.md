@@ -27,8 +27,17 @@ opencode serve xN --HTTPS_PROXY--> resin (账号粘性出口 IP) --> opencode.ai
   前发 usage 尾帧，绝不返回全零 usage；
 - **工具拒绝**：agent 的 bash/edit/webfetch 等执行类工具默认 deny，
   请求里的工具定义形态不受影响；
-- **账号体检页**：`GET /` 提供摘要卡、账号台账（出口 IP/成败计数/最近错误）、
-  请求流水与操作（体检、冷却、解冻、释放租约），5 秒自刷。
+- **账号体检页**（`GET /`，5 秒自刷）：
+  - 摘要卡 + 账号台账（状态、体检结论与详情、出口 IP/节点、成败计数、
+    成功天数、最近错误）+ 最近请求流水；
+  - 体检：单账号体检、一键测试台账（并发 1-20 可调），结论落台账；
+  - 自动体检：可开关与设间隔，健康自动入池（解冻），被拒冷却 24h；
+  - 账号增删：运行期添加手动账号（持久保存，按需启动 serve 实例），
+    手动账号可删除；
+  - 代理设置：页面修改 resin 地址/平台/token，先连通性测试再保存，
+    保存后逐账号滚动重启 serve 生效；
+- **冷却与重置自适应**：免费额度按出口 IP 且 UTC 日重置，被拒账号可手动
+  解冻，或等自动体检在下轮拉回。
 
 ## 部署
 
@@ -52,7 +61,8 @@ docker compose up -d
 | `RESIN_PROXY_TOKEN` | 必填 | resin 代理 token |
 | `RESIN_ADMIN_TOKEN` | 空 | resin 管理 token，用于释放租约 |
 | `RESIN_PLATFORM` | `Default` | resin 平台名（用户名为 `平台.账号`） |
-| `BRIDGE_ACCOUNTS` | `bridge-1,bridge-2,bridge-3` | 账号列表，逗号分隔，每号一个 serve 实例 |
+| `BRIDGE_ACCOUNTS` | `bridge-1,bridge-2,bridge-3` | 初始账号列表（来源=配置），每号一个 serve 实例 |
+| `MAX_ACCOUNTS` | `8` | 账号总数上限（含手动添加） |
 | `COOLDOWN_HOURS` | `24` | 403/429 冷却时长；免费额度按出口 IP 且 UTC 日重置，可调短 |
 | `MAX_SWITCHES`（`--max-switches`） | `3` | 单请求换号重试上限 |
 | `OC_UPSTREAM_TIMEOUT` | `600` | 单次上游生成超时（秒） |
@@ -72,9 +82,19 @@ docker compose up -d
 | `GET /api/status` | 账号台账与摘要（JSON） |
 | `GET /api/logs` | 最近 200 条请求流水 |
 | `POST /api/accounts/{name}/probe` | 体检单账号，健康且在冷却则自动解冻 |
+| `POST /api/probe` | 并发体检：`{model, concurrency, accounts?}`，缺省测全部 |
+| `POST /api/auto` | 自动体检开关与间隔：`{enabled, interval_hours, concurrency}` |
+| `POST /api/accounts/add` | 添加手动账号：`{names: ["a","b"]}` |
+| `POST /api/accounts/{name}/delete` | 删除手动账号（配置来源不可删） |
 | `POST /api/accounts/{name}/cooldown` | `{"minutes":1440}` 冷却；`0` 解冻 |
 | `POST /api/accounts/{name}/release` | 释放该账号的 resin 租约 |
+| `GET /api/proxy` | 当前代理配置（token 掩码） |
+| `POST /api/proxy/test` | 连通性测试，返回出口 IP |
+| `POST /api/proxy` | 保存代理配置并滚动重启 serve（保存前先测试） |
 | `GET /healthz` | 存活检查 |
+
+落盘状态（`STATE_DIR`）：`accounts.json` 台账（账号/体检/成败统计/冷却）、
+`proxy.json` 代理配置、`auto.json` 自动体检配置。
 
 ## 安全
 
