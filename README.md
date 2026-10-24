@@ -30,7 +30,10 @@ opencode serve xN --HTTPS_PROXY--> resin (账号粘性出口 IP) --> opencode.ai
 - **账号体检页**（`GET /`，5 秒自刷）：
   - 摘要卡 + 账号台账（状态、体检结论与详情、出口 IP/节点、成败计数、
     成功天数、最近错误）+ 最近请求流水；
-  - 体检：单账号体检、一键测试台账（并发 1-20 可调），结论落台账；
+  - 体检：单账号体检、一键测试台账（并发 1-20 可调），结论与模型回答落台账；
+    测试模型下拉选择（自动筛选 `-free` 模型，默认 `deepseek-v4.1-flash-free`）；
+  - 生成新账号：一键生成 x 个 `oc-xxxxxxxx` 账号并发体检，健康自动入池，
+    被拒冷却 24h 并停实例省内存（解冻或体检时按需拉起）；
   - 自动体检：可开关与设间隔，健康自动入池（解冻），被拒冷却 24h；
   - 账号增删：运行期添加手动账号（持久保存，按需启动 serve 实例），
     手动账号可删除；
@@ -62,12 +65,12 @@ docker compose up -d
 | `RESIN_ADMIN_TOKEN` | 空 | resin 管理 token，用于释放租约 |
 | `RESIN_PLATFORM` | `Default` | resin 平台名（用户名为 `平台.账号`） |
 | `BRIDGE_ACCOUNTS` | `bridge-1,bridge-2,bridge-3` | 初始账号列表（来源=配置），每号一个 serve 实例 |
-| `MAX_ACCOUNTS` | `8` | 账号总数上限（含手动添加） |
 | `COOLDOWN_HOURS` | `24` | 403/429 冷却时长；免费额度按出口 IP 且 UTC 日重置，可调短 |
 | `MAX_SWITCHES`（`--max-switches`） | `3` | 单请求换号重试上限 |
 | `OC_UPSTREAM_TIMEOUT` | `600` | 单次上游生成超时（秒） |
 | `OC_DENY_TOOLS` | `1` | 置 0 可放开 agent 工具（不建议） |
-| `PROBE_MODEL` | `mimo-v2.6-flash-free` | 体检用模型 |
+| `PROBE_MODEL` | `deepseek-v4.1-flash-free` | 默认体检模型（页面下拉可改，选择会持久化） |
+| `MAX_ACCOUNTS` | `10` | 账号总数上限（含生成与手动添加） |
 | `BRIDGE_DEBUG` | `0` | 置 1 开启 `/debug/state`、`/debug/cooldown` |
 | `BRIDGE_PORT` | `8790` | 监听端口 |
 | `OC_PORT_BASE` | `14100` | serve 实例端口基数 |
@@ -83,6 +86,7 @@ docker compose up -d
 | `GET /api/logs` | 最近 200 条请求流水 |
 | `POST /api/accounts/{name}/probe` | 体检单账号，健康且在冷却则自动解冻 |
 | `POST /api/probe` | 并发体检：`{model, concurrency, accounts?}`，缺省测全部 |
+| `POST /api/probe/generate` | 生成新账号并体检：`{count, model, concurrency}` |
 | `POST /api/auto` | 自动体检开关与间隔：`{enabled, interval_hours, concurrency}` |
 | `POST /api/accounts/add` | 添加手动账号：`{names: ["a","b"]}` |
 | `POST /api/accounts/{name}/delete` | 删除手动账号（配置来源不可删） |

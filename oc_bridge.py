@@ -38,6 +38,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,7 +69,8 @@ _models_lock = threading.Lock()
 _pool_lock = threading.Lock()
 _egress_cache = {"ts": 0.0, "data": {}}
 _dirty = threading.Event()
-AUTO = {"enabled": False, "interval_hours": 24.0, "concurrency": 4, "last_run": 0.0}
+AUTO = {"enabled": False, "interval_hours": 24.0, "concurrency": 4,
+        "last_run": 0.0, "model": ""}
 
 
 def log(*a):
@@ -347,9 +349,17 @@ def stop_account(a):
 def supervisor():
     while True:
         for a in list(ACCOUNTS):
-            if a.stopping:
+            if a.stopping or getattr(a, "probing", False):
                 continue
-            if not a.alive():
+            if a.cooled():
+                # 冷却中停实例省内存，解冻/体检时按需拉起
+                if a.alive():
+                    try:
+                        a.proc.terminate()
+                        log(f"[sup] {a.name} 冷却中，停实例")
+                    except Exception:
+                        pass
+            elif not a.alive():
                 log(f"[sup] {a.name} 进程退出，重拉")
                 try:
                     start_account(a)
@@ -779,27 +789,47 @@ PROBE_PROMPT = ("我要去洗汽车，洗车店离我家只有50m，走路去还
                 "回复最多五个字。")
 
 
+def ensure_serve(a, tries=90):
+    """体检等场景按需拉起 serve（冷却中的账号实例已停）。"""
+    if a.alive():
+        return True
+    try:
+        start_account(a)
+    except Exception as e:
+        log(f"[probe] {a.name} 拉起失败: {e!r}")
+        return False
+    return wait_account(a, tries=tries)
+
+
 def probe_one(a, model):
     """单账号体检：答案有唯一合理项(走路)，落台账供页面展示。"""
     t0 = time.time()
-    status, text, _usage, detail = chat_roundtrip(model, PROBE_PROMPT, None,
-                                                  probe=True, account=a)
-    ms = int((time.time() - t0) * 1000)
-    if status == 200:
-        outcome = "healthy"
-        if a.cooled():
-            unfreeze_account(a)
-    elif status in SWITCH_STATUS:
-        outcome = "rejected"
-    else:
-        outcome = "failed"
-    answer = (text or "")[:200]
-    a.probe = {"outcome": outcome, "status": status, "ms": ms,
-               "detail": (detail or "")[:200], "at": time.time(),
-               "model": model, "answer": answer}
-    save_accounts()
-    return {"name": a.name, "outcome": outcome, "status": status,
-            "ms": ms, "detail": (detail or "")[:200], "answer": answer}
+    a.probing = True
+    try:
+        if not ensure_serve(a):
+            status, text, detail = 598, None, "serve 未就绪"
+        else:
+            status, text, _usage, detail = chat_roundtrip(model, PROBE_PROMPT,
+                                                          None,
+                                                          probe=True, account=a)
+        ms = int((time.time() - t0) * 1000)
+        if status == 200:
+            outcome = "healthy"
+            if a.cooled():
+                unfreeze_account(a)
+        elif status in SWITCH_STATUS:
+            outcome = "rejected"
+        else:
+            outcome = "failed"
+        answer = (text or "")[:200]
+        a.probe = {"outcome": outcome, "status": status, "ms": ms,
+                   "detail": (detail or "")[:200], "at": time.time(),
+                   "model": model, "answer": answer}
+        save_accounts()
+        return {"name": a.name, "outcome": outcome, "status": status,
+                "ms": ms, "detail": (detail or "")[:200], "answer": answer}
+    finally:
+        a.probing = False
 
 
 def batch_probe(names, model, concurrency):
@@ -821,9 +851,9 @@ def auto_loop():
                     >= float(AUTO.get("interval_hours", 24)) * 3600):
                 AUTO["last_run"] = time.time()
                 save_auto()
-                log("[auto] 自动体检开始")
-                summary, _r = batch_probe([], ARGS.probe_model,
-                                          AUTO.get("concurrency") or 4)
+                model = AUTO.get("model") or ARGS.probe_model
+                log(f"[auto] 自动体检开始 model={model}")
+                summary, _r = batch_probe([], model, AUTO.get("concurrency") or 4)
                 log(f"[auto] 自动体检完成 {summary}")
         except Exception as e:
             log(f"[auto] 异常: {e!r}")
@@ -997,6 +1027,7 @@ legend{font-size:13px;font-weight:600;padding:0 6px}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0}
 .row label{font-size:13px;color:var(--mut);min-width:90px}
 input{font:inherit;padding:4px 8px;border:1px solid var(--bd);border-radius:6px}
+select{font:inherit;padding:4px 8px;border:1px solid var(--bd);border-radius:6px;background:#fff}
 input.w260{width:260px}input.w110{width:110px}
 button{font:inherit;padding:3px 10px;margin:1px;border:1px solid var(--bd);border-radius:6px;background:#fff;cursor:pointer}
 button:hover{background:#eef1f4}
@@ -1034,9 +1065,14 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 
 <fieldset><legend>体检</legend>
 <div class="row">
-  <label>测试模型</label><input id="probeModel" class="w260">
+  <label>测试模型</label><select id="probeModel" class="w260" onchange="saveModel()"></select>
   <label>并发数</label><input id="probeConc" class="w110" value="4">
   <button class="primary" onclick="probeAll()">一键测试台账</button>
+</div>
+<div class="row">
+  <label>生成新账号</label><input id="genCount" class="w110" value="3">
+  <button class="primary" onclick="genProbe()">生成并测试</button>
+  <span class="mut">生成 oc-xxxxxxxx 账号并发体检：健康自动入池，被拒冷却并停实例</span>
 </div>
 <div class="row">
   <label>自动体检</label>
@@ -1047,7 +1083,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 <div class="row">
   <label>添加账号</label><input id="addNames" class="w260" placeholder="账号名，逗号分隔">
   <button onclick="addAccounts()">添加</button>
-  <span class="mut">手动账号持久保存，每号启动一个 serve 实例（内存约 200MB）</span>
+  <span class="mut">手动账号持久保存，每号一个 serve 实例（冷却中自动停实例省内存）</span>
 </div></fieldset>
 
 <div class="row filters" id="filters">
@@ -1096,7 +1132,7 @@ async function refresh(){
   if(document.activeElement!==$("#pPlatform"))$("#pPlatform").value=s.proxy.platform||"";
   $("#pProxyMask").textContent=s.proxy.proxy_token_masked||"未设置";
   $("#pAdminMask").textContent=s.proxy.admin_token_masked||"未设置";
-  if(document.activeElement!==$("#probeModel"))$("#probeModel").value=s.probe_model||"";
+  fillModels(s);
   $("#autoOn").checked=s.auto.enabled;
   if(document.activeElement!==$("#autoHours"))$("#autoHours").value=s.auto.interval_hours;
   $("#autoHint").textContent=s.auto.enabled?`上次 ${s.auto.last_run?ts(s.auto.last_run):"未运行"}`:"已关闭";
@@ -1109,13 +1145,20 @@ async function refresh(){
    ||'<tr><td colspan="6" class="mut">暂无请求</td></tr>';
  }catch(e){$("#meta").textContent="加载失败："+e}
 }
+function fillModels(s){
+  const sel=$("#probeModel"),prev=sel.value;
+  const opts=s.free_models||[];
+  const def=(s.probe_model&&opts.includes(s.probe_model))?s.probe_model:(opts[0]||"");
+  const want=(prev&&opts.includes(prev))?prev:def;
+  sel.innerHTML=opts.map(m=>`<option value="${esc(m)}"${m===want?" selected":""}>${esc(m)}</option>`).join("");
+}
 function render(s){
-  const list=s.accounts.filter(a=>FILTER==="all"||(FILTER==="usable"?a.alive&&!a.cooled:FILTER==="cooling"?a.cooled:!a.alive));
+  const list=s.accounts.filter(a=>FILTER==="all"||(FILTER==="usable"?a.alive&&!a.cooled:FILTER==="cooling"?a.cooled:!a.alive&&!a.cooled));
   $("#accounts tbody").innerHTML=list.map(a=>{
    const eg=a.egress||{};
    let st;
-   if(!a.alive)st=badge("进程异常","b-bad");
-   else if(a.cooled)st=badge(`冷却 ${hms(a.cooldown_remaining_s)||"<1分"}`,"b-warn");
+   if(a.cooled)st=badge(`冷却 ${hms(a.cooldown_remaining_s)||"<1分"}`,"b-warn");
+   else if(!a.alive)st=badge("进程异常","b-bad");
    else st=badge("可用","b-ok");
    const p=a.probe||{};
    let pv=p.at?badge((PROBE[p.outcome]||[p.outcome,"b-mut"])[0],(PROBE[p.outcome]||["","b-mut"])[1]):'<span class="mut">未体检</span>';
@@ -1152,8 +1195,20 @@ async function probeAll(){
  refresh();
 }
 async function autoSave(){
- try{await api("/api/auto",{enabled:$("#autoOn").checked,interval_hours:parseFloat($("#autoHours").value)||24,concurrency:parseInt($("#probeConc").value)||4});
+ try{await api("/api/auto",{enabled:$("#autoOn").checked,interval_hours:parseFloat($("#autoHours").value)||24,concurrency:parseInt($("#probeConc").value)||4,model:$("#probeModel").value||undefined});
   toast("自动体检配置已保存")}catch(e){toast("保存失败")}
+ refresh();
+}
+async function saveModel(){try{await api("/api/auto",{model:$("#probeModel").value})}catch(e){}}
+async function genProbe(){
+ const count=Math.max(1,Math.min(20,parseInt($("#genCount").value)||3));
+ const conc=Math.max(1,Math.min(20,parseInt($("#probeConc").value)||4));
+ toast(`生成 ${count} 个新账号并测试中…`);
+ try{
+  const r=await api("/api/probe/generate",{count,concurrency:conc,model:$("#probeModel").value||undefined});
+  const ans=(r.results||[]).map(x=>`${x.name} 答:${(x.answer||x.detail||"").slice(0,12)}`).join("，");
+  toast(`生成 ${(r.created||[]).length} 个：健康 ${r.summary.healthy}，被拒 ${r.summary.rejected}，失败 ${r.summary.failed}${ans?"。"+ans:""}`)
+ }catch(e){toast("生成测试失败")}
  refresh();
 }
 async function proxyTest(){
@@ -1256,14 +1311,19 @@ class Handler(BaseHTTPRequestHandler):
         with REQ_LOGS_LOCK:
             recent = list(REQ_LOGS)[:500]
         day = [e for e in recent if not str(e["outcome"]).startswith("probe_")]
+        models = upstream_models()
+        free_models = sorted({
+            str(m.get("id") if isinstance(m, dict) else m) for m in models
+            if "-free" in str(m.get("id") if isinstance(m, dict) else m)})
         self._json(200, {
             "ok": True,
             "started_at": STARTED_AT,
             "uptime_s": int(time.time() - STARTED_AT),
             "resin_url": ARGS.resin_url, "platform": ARGS.platform,
             "resin_ok": resin_ok,
-            "models_count": len(upstream_models()),
-            "probe_model": ARGS.probe_model,
+            "models_count": len(models),
+            "free_models": free_models,
+            "probe_model": AUTO.get("model") or ARGS.probe_model,
             "max_accounts": ARGS.max_accounts,
             "proxy": {
                 "resin_url": ARGS.resin_url, "platform": ARGS.platform,
@@ -1275,7 +1335,7 @@ class Handler(BaseHTTPRequestHandler):
             "summary": {
                 "usable": sum(1 for a in ACCOUNTS if a.alive() and not a.cooled()),
                 "cooling": sum(1 for a in ACCOUNTS if a.cooled()),
-                "down": sum(1 for a in ACCOUNTS if not a.alive()),
+                "down": sum(1 for a in ACCOUNTS if not a.alive() and not a.cooled()),
                 "switches": SWITCH_COUNT,
             },
             "success_24h": sum(1 for e in day if e["outcome"] == "ok"),
@@ -1327,7 +1387,8 @@ class Handler(BaseHTTPRequestHandler):
             if action == "release":
                 return self._json(200, {"ok": release_lease(a)})
             if action == "probe":
-                model = normalize_model(req.get("model") or ARGS.probe_model)
+                model = normalize_model(req.get("model") or AUTO.get("model")
+                                        or ARGS.probe_model)
                 return self._json(200, probe_one(a, model))
         if p == "/api/accounts/add":
             names = req.get("names") or []
@@ -1335,8 +1396,37 @@ class Handler(BaseHTTPRequestHandler):
                 names = names.split(",")
             added, skipped = add_accounts(names)
             return self._json(200, {"added": added, "skipped": skipped})
+        if p == "/api/probe/generate":
+            model = normalize_model(req.get("model") or AUTO.get("model")
+                                    or ARGS.probe_model)
+            count = max(1, min(20, int(req.get("count") or 3)))
+            conc = max(1, min(20, int(req.get("concurrency") or 4)))
+            created = []
+            for _i in range(count):
+                if len(ACCOUNTS) >= ARGS.max_accounts:
+                    break
+                a = Account("oc-" + uuid.uuid4().hex[:8], ARGS.next_port, "manual")
+                ARGS.next_port += 1
+                a.rebuild_proxy_url()
+                ACCOUNTS.append(a)
+                save_accounts()
+                try:
+                    start_account(a)
+                except Exception as e:
+                    log(f"[boot] {a.name} 启动失败: {e!r}")
+                created.append(a)
+            with ThreadPoolExecutor(max_workers=min(conc, len(created) or 1)) as ex:
+                results = list(ex.map(lambda x: probe_one(x, model), created))
+            summary = {
+                "healthy": sum(1 for r in results if r["outcome"] == "healthy"),
+                "rejected": sum(1 for r in results if r["outcome"] == "rejected"),
+                "failed": sum(1 for r in results if r["outcome"] == "failed"),
+            }
+            return self._json(200, {"created": [a.name for a in created],
+                                    "summary": summary, "results": results})
         if p == "/api/probe":
-            model = normalize_model(req.get("model") or ARGS.probe_model)
+            model = normalize_model(req.get("model") or AUTO.get("model")
+                                    or ARGS.probe_model)
             conc = int(req.get("concurrency") or 4)
             names = req.get("accounts") or []
             summary, results = batch_probe(names, model, conc)
@@ -1348,6 +1438,8 @@ class Handler(BaseHTTPRequestHandler):
                 AUTO["interval_hours"] = max(0.5, float(req["interval_hours"] or 24))
             if "concurrency" in req:
                 AUTO["concurrency"] = max(1, min(20, int(req["concurrency"] or 4)))
+            if "model" in req:
+                AUTO["model"] = normalize_model(req.get("model") or "")
             save_auto()
             return self._json(200, {"ok": True, "auto": dict(AUTO)})
         if p == "/api/proxy/test":
@@ -1469,8 +1561,9 @@ def main():
     ap.add_argument("--deny-tools", type=int, default=env_int("OC_DENY_TOOLS", 1))
     ap.add_argument("--upstream-timeout", type=int, default=env_int("OC_UPSTREAM_TIMEOUT", 600))
     ap.add_argument("--free-models", default=os.environ.get("BRIDGE_FREE_MODELS", ""))
-    ap.add_argument("--probe-model", default=os.environ.get("PROBE_MODEL", "mimo-v2.6-flash-free"))
-    ap.add_argument("--max-accounts", type=int, default=env_int("MAX_ACCOUNTS", 8))
+    ap.add_argument("--probe-model", default=os.environ.get(
+        "PROBE_MODEL", "deepseek-v4.1-flash-free"))
+    ap.add_argument("--max-accounts", type=int, default=env_int("MAX_ACCOUNTS", 10))
     ap.add_argument("--debug", type=int, default=env_int("BRIDGE_DEBUG", 0))
     ARGS = ap.parse_args()
     ARGS.free_models = [m.strip() for m in (ARGS.free_models or "").split(",") if m.strip()]
@@ -1490,6 +1583,8 @@ def main():
     signal.signal(signal.SIGTERM, flush_children)
     signal.signal(signal.SIGINT, flush_children)
     load_state()
+    if not AUTO.get("model"):
+        AUTO["model"] = ARGS.probe_model
     for a in ACCOUNTS:
         a.rebuild_proxy_url()
     save_accounts()
