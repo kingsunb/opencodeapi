@@ -775,10 +775,14 @@ def chat_roundtrip(model, prompt, system, probe=False, account=None):
         SWITCH_COUNT += 1
 
 
+PROBE_PROMPT = ("我要去洗汽车，洗车店离我家只有50m，走路去还是坐公交车去？"
+                "回复最多五个字。")
+
+
 def probe_one(a, model):
-    """单账号体检：与 NovaVeil probeChannel 同问 "ping"；回答落台账供页面展示。"""
+    """单账号体检：答案有唯一合理项(走路)，落台账供页面展示。"""
     t0 = time.time()
-    status, text, _usage, detail = chat_roundtrip(model, "ping", None,
+    status, text, _usage, detail = chat_roundtrip(model, PROBE_PROMPT, None,
                                                   probe=True, account=a)
     ms = int((time.time() - t0) * 1000)
     if status == 200:
