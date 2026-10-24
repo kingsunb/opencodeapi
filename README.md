@@ -61,8 +61,8 @@ docker compose up -d
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `RESIN_URL` | `http://resin:2260` | resin 地址（代理与管理 API 同端口） |
-| `RESIN_PROXY_TOKEN` | 必填 | resin 代理 token |
-| `RESIN_ADMIN_TOKEN` | 空 | resin 管理 token，用于释放租约 |
+| `RESIN_PROXY_TOKEN` | 必填 | resin 代理 token，代理通道（CONNECT/模型拉取）用 |
+| `RESIN_ADMIN_TOKEN` | 空（可选） | resin 管理 token：用于 403/429 后释放租约（冷却期满换新出口 IP）与页面显示账号出口 IP；不填则仅保留冷却，账号会粘回原出口 |
 | `RESIN_PLATFORM` | `Default` | resin 平台名（用户名为 `平台.账号`） |
 | `BRIDGE_ACCOUNTS` | `bridge-1,bridge-2,bridge-3` | 初始账号列表（来源=配置），每号一个 serve 实例 |
 | `COOLDOWN_HOURS` | `24` | 403/429 冷却时长；免费额度按出口 IP 且 UTC 日重置，可调短 |

@@ -6,7 +6,8 @@ services:
     environment:
       RESIN_URL: http://resin:2260
       RESIN_PROXY_TOKEN: ${RESIN_PROXY_TOKEN:?请在同目录 .env 提供}
-      RESIN_ADMIN_TOKEN: ${RESIN_ADMIN_TOKEN:?请在同目录 .env 提供}
+      # 可选：不填则无法自动释放租约（冷却后拿不到新出口 IP），且页面不显示出口 IP
+      RESIN_ADMIN_TOKEN: ${RESIN_ADMIN_TOKEN:-}
       RESIN_PLATFORM: "Default"
       BRIDGE_ACCOUNTS: "bridge-1,bridge-2,bridge-3"
       COOLDOWN_HOURS: "24"
