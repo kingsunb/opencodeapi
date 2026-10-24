@@ -791,13 +791,15 @@ PROBE_PROMPT = ("我要去洗汽车，洗车店离我家只有50m，走路去还
 
 def ensure_serve(a, tries=90):
     """体检等场景按需拉起 serve（冷却中的账号实例已停）。"""
-    if a.alive():
+    st, _d = oc(a, "GET", "/global/health", timeout=2)
+    if st == 200:
         return True
-    try:
-        start_account(a)
-    except Exception as e:
-        log(f"[probe] {a.name} 拉起失败: {e!r}")
-        return False
+    if not a.alive():
+        try:
+            start_account(a)
+        except Exception as e:
+            log(f"[probe] {a.name} 拉起失败: {e!r}")
+            return False
     return wait_account(a, tries=tries)
 
 
@@ -1361,7 +1363,8 @@ class Handler(BaseHTTPRequestHandler):
             a = self.find_account(req.get("account"))
             if not a:
                 return self._json(404, {"error": {"message": "no such account"}})
-            cooldown_account(a, float(req.get("minutes") or 60) / 60.0)
+            raw = req.get("minutes")
+            cooldown_account(a, (60.0 if raw is None else float(raw)) / 60.0)
             return self._json(200, {"ok": True})
         m = re.match(r"^/api/accounts/([^/]+)/(cooldown|release|probe|delete)$", p)
         if m:
@@ -1377,7 +1380,8 @@ class Handler(BaseHTTPRequestHandler):
             if not a:
                 return self._json(404, {"error": {"message": "no such account"}})
             if action == "cooldown":
-                minutes = float(req.get("minutes") or 1440)
+                raw = req.get("minutes")
+                minutes = 1440.0 if raw is None else float(raw)
                 if minutes <= 0:
                     unfreeze_account(a)
                 else:
